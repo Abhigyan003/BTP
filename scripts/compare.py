@@ -89,20 +89,32 @@ def train_scratch(data, device, epochs=10):
             
     return model
 
+from src.entropy import EntropicWeightCalculator
+
+# ... (Keep helpers same as before) ...
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='SMD', help='Dataset name (folder in processed/)')
     parser.add_argument('--use_causal', action='store_true', help='Enable Tigramite Causal Weighting')
+    parser.add_argument('--use_entropy', action='store_true', help='Use Entropic Weighting (replaces Periodicity)')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"=== HEAD-TO-HEAD: {args.dataset} (Omni vs Scratch) ===")
+    
+    if args.use_entropy:
+        print("!!! USING ENTROPIC WEIGHTING (Structure-Based) !!!")
+    else:
+        print("... Using Periodic Weighting (Cycle-Based)")
+
     if args.use_causal:
         print("!!! CAUSAL WEIGHTING ENABLED !!!")
     
     # 1. Initialize Tools
     loader = ProcessedDataLoader(processed_dir='processed')
     p_calc = PeriodicityCalculator()
+    e_calc = EntropicWeightCalculator(alpha=2.0)
     c_calc = CausalWeightCalculator(max_lag=2)
     
     # 2. Get Entities
@@ -126,36 +138,39 @@ def main():
     print(f"\n[Phase 1] Building Shape Library...")
     
     source_list = []
-    final_weights_list = []
+    weights_list = []
     
     for i, e in enumerate(source_entities):
         # Load Train
         d = loader.load(args.dataset, e, 'train')
         source_list.append(d)
         
-        # 1. Periodic Weights
-        w_p = p_calc.compute_weights(d)
+        # 1. Base Weight (Entropy OR Periodicity)
+        if args.use_entropy:
+            w_base = e_calc.compute_entropic_weights(d)
+        else:
+            w_base = p_calc.compute_weights(d)
         
         # 2. Causal Weights (Optional)
         if args.use_causal:
             print(f"   > Causal Analysis: {e}...", end='\r')
             w_c = c_calc.compute_causal_weights(d)
             # Hybrid Weighting
-            w_final = w_p * (1.0 + w_c)
+            w_final = w_base * (1.0 + w_c)
         else:
-            w_final = w_p
+            w_final = w_base
             
-        final_weights_list.append(w_final)
+        weights_list.append(w_final)
     
     if args.use_causal: print("   > Causal Analysis Complete.          ")
 
     # Train Base Models
     big_data = np.vstack(source_list)
-    global_weights = np.mean(np.array(final_weights_list), axis=0)
+    global_weights = np.mean(np.array(weights_list), axis=0)
     
     omni_trainer = OmniTransferTrainer(TranAD, device=device)
-    # Train offline (Using 10 epochs for robustness)
-    omni_trainer.train_offline(big_data, global_weights, n_clusters=5)
+    # Train offline (Using auto-clustering n_clusters=None for consistency with benchmark)
+    omni_trainer.train_offline(big_data, global_weights, n_clusters=None)
     print("      Shape Library Ready.")
     
     # ==========================================
@@ -210,8 +225,9 @@ def main():
     if results:
         df = pd.DataFrame(results)
         
-        suffix = "_causal" if args.use_causal else ""
-        out_file = f"results/csv/{args.dataset}_comparison{suffix}.csv"
+        tag = "_entropy" if args.use_entropy else "_periodic"
+        if args.use_causal: tag += "_causal"
+        out_file = f"results/csv/{args.dataset}_comparison{tag}.csv"
         
         df.to_csv(out_file, index=False)
         print(f"\nSaved to {out_file}")

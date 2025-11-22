@@ -8,58 +8,29 @@ from src.data_loader import ProcessedDataLoader, PeriodicityCalculator
 from src.omni_framework import OmniTransferTrainer
 from src.models import TranAD
 from src.causality import CausalWeightCalculator
+from src.entropy import EntropicWeightCalculator # <--- NEW IMPORT
 
-# ==========================================
-# HELPER 1: RAW F1 (Strict Point-wise)
-# ==========================================
+# ... (Keep helper functions get_best_f1 and calc_point_adjusted_f1 same as before) ...
+# (Copy them from previous version if needed, omitted here to save space)
 def get_best_f1(scores, labels):
-    """
-    Calculates standard point-wise F1 score.
-    Returns: (best_f1, best_threshold)
-    """
-    # Align lengths
     if len(scores) < len(labels): labels = labels[-len(scores):]
     else: scores = scores[-len(labels):]
-    
-    best_f1 = 0
-    best_thresh = 0
-    
-    # Percentile search for speed and robustness
+    best_f1 = 0; best_thresh = 0
     thresholds = np.percentile(scores, np.linspace(0, 100, 100))
-    
     for thresh in thresholds:
         preds = (scores > thresh).astype(int)
         tp = np.sum((preds == 1) & (labels == 1))
         fp = np.sum((preds == 1) & (labels == 0))
         fn = np.sum((preds == 0) & (labels == 1))
-        
-        p = tp / (tp + fp + 1e-8)
-        r = tp / (tp + fn + 1e-8)
-        f1 = 2 * (p * r) / (p + r + 1e-8)
-        
-        if f1 > best_f1: 
-            best_f1 = f1
-            best_thresh = thresh
-            
+        p = tp/(tp+fp+1e-8); r = tp/(tp+fn+1e-8); f1 = 2*p*r/(p+r+1e-8)
+        if f1 > best_f1: best_f1 = f1; best_thresh = thresh
     return best_f1, best_thresh
 
-# ==========================================
-# HELPER 2: POINT ADJUSTED F1 (Paper Standard)
-# ==========================================
 def calc_point_adjusted_f1(scores, labels):
-    """
-    Calculates F1 using the Point Adjustment protocol.
-    If any point in a ground truth anomaly segment is detected, 
-    the whole segment is marked correctly detected.
-    """
     if len(scores) < len(labels): labels = labels[-len(scores):]
     else: scores = scores[-len(labels):]
-
     best_f1 = 0.0
-    # Optimized search range for anomalies (usually high scores)
     thresholds = np.percentile(scores, np.linspace(0, 99.9, 100))
-    
-    # Pre-calculate anomaly segments for speed
     actual = (labels == 1)
     anomaly_segments = []
     i = 0
@@ -69,166 +40,130 @@ def calc_point_adjusted_f1(scores, labels):
             while j < len(labels) and actual[j]: j += 1
             anomaly_segments.append((i, j))
             i = j
-        else:
-            i += 1
-
+        else: i += 1
     for thresh in thresholds:
         preds = (scores > thresh).astype(int)
         adjusted_preds = np.array(preds)
-        
-        # Vectorized PA application
         for (start, end) in anomaly_segments:
-            if np.sum(preds[start:end]) > 0:
-                adjusted_preds[start:end] = 1
-                
+            if np.sum(preds[start:end]) > 0: adjusted_preds[start:end] = 1
         tp = np.sum((adjusted_preds == 1) & (labels == 1))
         fp = np.sum((adjusted_preds == 1) & (labels == 0))
         fn = np.sum((adjusted_preds == 0) & (labels == 1))
-        
         if tp > 0:
-            p = tp / (tp + fp + 1e-8)
-            r = tp / (tp + fn + 1e-8)
-            f1 = 2 * (p * r) / (p + r + 1e-8)
-            
-            if f1 > best_f1:
-                best_f1 = f1
-            
+            p = tp/(tp+fp+1e-8); r = tp/(tp+fn+1e-8); f1 = 2*p*r/(p+r+1e-8)
+            if f1 > best_f1: best_f1 = f1
     return best_f1
 
-# ==========================================
-# MAIN BENCHMARK LOGIC
-# ==========================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='SMD', help='Dataset name (folder in processed/)')
+    parser.add_argument('--dataset', type=str, default='SMD', help='Dataset name')
     parser.add_argument('--use_causal', action='store_true', help='Enable Tigramite Causal Weighting')
+    parser.add_argument('--use_entropy', action='store_true', help='Use Entropic Weighting (replaces Periodicity)')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"=== OMNITRANSFER: {args.dataset} BENCHMARK (50/50 Split) ===")
-    if args.use_causal:
-        print("!!! CAUSAL WEIGHTING ENABLED (Physics-Aware Clustering) !!!")
+    print(f"=== OMNITRANSFER: {args.dataset} BENCHMARK ===")
     
-    # 1. Initialize Components
+    # Logic Configuration
+    if args.use_entropy:
+        print("!!! USING ENTROPIC WEIGHTING (Structure-Based) !!!")
+    else:
+        print("... Using Periodic Weighting (Cycle-Based)")
+        
+    if args.use_causal:
+        print("!!! CAUSAL WEIGHTING ENABLED !!!")
+    
     loader = ProcessedDataLoader(processed_dir='processed')
+    
+    # Initialize Calculators
     p_calc = PeriodicityCalculator()
+    e_calc = EntropicWeightCalculator(alpha=2.0) # alpha=2 punishes noise harder
     c_calc = CausalWeightCalculator(max_lag=2)
     
-    # 2. Load Entities
     all_entities = loader.get_available_entities(args.dataset)
-    if not all_entities:
-        print(f"Error: No data found for '{args.dataset}'. Did you run preprocess.py?")
-        return
+    if not all_entities: return
 
-    # 3. Split 50/50 (Source vs Target)
     split_idx = len(all_entities) // 2
     source_entities = all_entities[:split_idx]
     target_entities = all_entities[split_idx:]
     
-    print(f"Total Entities: {len(all_entities)}")
-    print(f"   > Source Domain (Offline Training): {len(source_entities)}")
-    print(f"   > Target Domain (Online Evaluation): {len(target_entities)}")
-    
     # ==========================================
-    # PHASE 1: OFFLINE TRAINING
+    # PHASE 1: OFFLINE
     # ==========================================
-    print(f"\n[Phase 1] Loading Source Data & Computing Weights...")
+    print(f"\n[Phase 1] Computing Weights...")
+    source_list = []
+    weights_list = []
     
-    source_data_list = []
-    final_weights_list = []
-    
-    for i, entity in enumerate(source_entities):
-        # Load Train Data
+    for entity in source_entities:
         data = loader.load(args.dataset, entity, 'train')
-        source_data_list.append(data)
+        source_list.append(data)
         
-        # 1. Calculate Periodic Weights (Standard)
-        w_p = p_calc.compute_weights(data)
-        
-        # 2. Calculate Causal Weights (Optional)
+        # 1. Base Weight (Entropy OR Periodicity)
+        if args.use_entropy:
+            # Use Entropy (Good for Steps/Ramps)
+            w_base = e_calc.compute_entropic_weights(data)
+        else:
+            # Use Periodicity (Good for Sine Waves)
+            w_base = p_calc.compute_weights(data)
+            
+        # 2. Causal Boost (Optional)
         if args.use_causal:
             print(f"   > Analyzing Causality: {entity}...", end='\r')
             w_c = c_calc.compute_causal_weights(data)
-            # Hybrid Formula: Boost periodic metrics if they are Drivers
-            w_final = w_p * (1.0 + w_c)
+            w_final = w_base * (1.0 + w_c)
         else:
-            w_final = w_p
+            w_final = w_base
             
-        final_weights_list.append(w_final)
+        weights_list.append(w_final)
         
-    if args.use_causal: print(f"   > Causal Analysis Complete.          ")
+    if args.use_causal: print("   > Causal Analysis Complete.          ")
 
-    # Stack Data
-    big_data = np.vstack(source_data_list)
-    global_weights = np.mean(np.array(final_weights_list), axis=0)
+    big_data = np.vstack(source_list)
+    global_weights = np.mean(np.array(weights_list), axis=0)
     
-    print(f"      Dataset Shape: {big_data.shape}")
+    print(f"      Weight Vector Sample: {global_weights[:5]}")
     
-    print("\n[Phase 1] Training Base Models (W-HAC + TranAD)...")
     trainer = OmniTransferTrainer(TranAD, device=device)
-    # Train offline (Auto-calculates thresholds internally)
-    trainer.train_offline(big_data, global_weights, n_clusters=5)
-    print("      Shape Library Built.")
-
-    # ==========================================
-    # PHASE 2: ONLINE EVALUATION LOOP
-    # ==========================================
-    print(f"\n[Phase 2] Evaluating Target Domain...")
+    # Auto-cluster (n_clusters=None) is best with Entropy as it creates sharper clusters
+    trainer.train_offline(big_data, global_weights, n_clusters=None) 
     
+    # ==========================================
+    # PHASE 2: ONLINE
+    # ==========================================
+    print(f"\n[Phase 2] Evaluation...")
     results = []
     
     for idx, entity in enumerate(target_entities):
         print(f"--- Target {idx+1}/{len(target_entities)}: {entity} ---")
-        
-        # Load Data
-        train_data = loader.load(args.dataset, entity, 'train')
-        test_data = loader.load(args.dataset, entity, 'test')
+        train = loader.load(args.dataset, entity, 'train')
+        test = loader.load(args.dataset, entity, 'test')
         labels = loader.load(args.dataset, entity, 'labels')
-        
-        # Handle label shape (Time, 1) -> (Time,)
         if len(labels.shape) > 1: labels = labels[:, 0]
         
-        # 1. Transfer Learning
         t0 = time.time()
-        # Pass NO beta_threshold to use the Auto-Calculated Beta from Phase 1
-        final_model = trainer.online_transfer(train_data)
+        final_model = trainer.online_transfer(train)
         init_time = time.time() - t0
         
-        # 2. Detection
-        scores = trainer.detect(final_model, test_data)
-        
-        # 3. Scoring
+        scores = trainer.detect(final_model, test)
         raw_f1, _ = get_best_f1(scores, labels)
         pa_f1 = calc_point_adjusted_f1(scores, labels)
         
         print(f"   > Init Time: {init_time:.2f}s | Raw F1: {raw_f1:.4f} | PA F1: {pa_f1:.4f}")
-        
         results.append({
-            "Machine": entity,
-            "Raw_F1": raw_f1,
-            "PA_F1": pa_f1,
-            "InitTime": init_time
+            "Machine": entity, "Raw_F1": raw_f1, "PA_F1": pa_f1, "InitTime": init_time
         })
 
-    # ==========================================
-    # FINAL REPORT
-    # ==========================================
+    # Save
     if results:
-        df_res = pd.DataFrame(results)
+        df = pd.DataFrame(results)
+        # Dynamic Filename
+        tag = "_entropy" if args.use_entropy else "_periodic"
+        if args.use_causal: tag += "_causal"
         
-        print("\n" + "="*60)
-        print(f"FINAL RESULTS: {args.dataset}")
-        print("="*60)
-        print(f"AVERAGE PA F1 SCORE    : {df_res['PA_F1'].mean():.4f}")
-        print(f"AVERAGE INIT TIME      : {df_res['InitTime'].mean():.4f} s")
-        print("-" * 60)
-        
-        # Dynamic filename based on settings
-        suffix = "_causal" if args.use_causal else ""
-        out_file = f"results/csv/{args.dataset}_benchmark{suffix}.csv"
-        
-        df_res.to_csv(out_file, index=False)
-        print(f"Results saved to {out_file}")
+        out_file = f"results/csv/{args.dataset}_benchmark{tag}.csv"
+        df.to_csv(out_file, index=False)
+        print(f"\nResults saved to {out_file}")
+        print(f"AVG PA F1: {df['PA_F1'].mean():.4f}")
 
 if __name__ == "__main__":
     main()

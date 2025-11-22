@@ -8,18 +8,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True, help='Dataset name (e.g. SMD, MSL, SWaT)')
     parser.add_argument('--use_causal', action='store_true', help='Visualize Causal Enhanced results')
+    parser.add_argument('--use_entropy', action='store_true', help='Visualize Entropic results')
     args = parser.parse_args()
 
     # Dynamic File Paths
-    suffix = "_causal" if args.use_causal else ""
-    csv_path = f"results/csv/{args.dataset}_comparison{suffix}.csv"
-    output_img = f"results/image/{args.dataset}_comparison{suffix}.png"
+    tag = "_entropy" if args.use_entropy else "_periodic"
+    if args.use_causal: tag += "_causal"
     
-    omni_label = "OmniTransfer (Causal)" if args.use_causal else "OmniTransfer (Standard)"
+    csv_path = f"results/csv/{args.dataset}_comparison{tag}.csv"
+    output_img = f"results/image/{args.dataset}_comparison{tag}.png"
+    
+    omni_label = "OmniTransfer"
+    if args.use_entropy: omni_label += " (Entropy"
+    else: omni_label += " (Periodic"
+    
+    if args.use_causal: omni_label += " + Causal)"
+    else: omni_label += ")"
 
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found.")
-        print(f"Run: python -m scripts.compare --dataset {args.dataset}" + (" --use_causal" if args.use_causal else ""))
+        print(f"Run: python -m scripts.compare --dataset {args.dataset}" + (" --use_entropy" if args.use_entropy else "") + (" --use_causal" if args.use_causal else ""))
         return
 
     df = pd.read_csv(csv_path)

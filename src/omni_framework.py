@@ -72,8 +72,21 @@ class OmniTransferTrainer:
         min_dist = float('inf')
         target_shape = np.mean(aligned, axis=0)
         
+        # FIX: Z-Normalize for Shape-Based Matching
+        # We want to match the *pattern*, not the amplitude/offset.
+        target_std = np.std(target_shape) + 1e-8
+        target_norm = (target_shape - np.mean(target_shape)) / target_std
+        
+        # print(f"   [Debug] Target Shape Mean: {np.mean(target_shape):.4f}, Var: {np.var(target_shape):.4f}")
         for cid, centroid in self.cluster_centroids.items():
-            dist = self.whac.weighted_euclidean(target_shape, centroid)
+            # Normalize centroid too
+            cent_std = np.std(centroid) + 1e-8
+            cent_norm = (centroid - np.mean(centroid)) / cent_std
+            
+            # Calculate distance on NORMALIZED shapes
+            dist = self.whac.weighted_euclidean(target_norm, cent_norm)
+            
+            # print(f"   [Debug] Dist to Cluster {cid}: {dist:.4f} (Centroid Mean: {np.mean(centroid):.4f})")
             if dist < min_dist:
                 min_dist = dist
                 best_cid = int(cid)
@@ -114,11 +127,21 @@ class OmniTransferTrainer:
                 param.requires_grad = False
             self._train_loop(target_model, aligned, epochs=5)
             
+        # Store the reference shape (pivot) in the model for consistent alignment during detection
+        target_model.reference_shape = target_shape
+        
         return target_model
 
     def detect(self, model, test_data):
         model.eval()
         segments = self.whac.segment_data(test_data, stride=1)
+        # FIX 1: Align phases before detection to match training distribution
+        # FIX 5: Use stored reference shape for consistent alignment
+        if hasattr(model, 'reference_shape'):
+            segments = self.whac.align_phase_shifts(segments, pivot=model.reference_shape)
+        else:
+            segments = self.whac.align_phase_shifts(segments)
+
         if len(segments) == 0: return np.array([])
 
         batch_size = 256
