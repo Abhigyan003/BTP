@@ -5,7 +5,7 @@ import os
 
 def main():
     # 1. Load Data
-    csv_path = "results/csv/smd_benchmark_50_50.csv"
+    csv_path = "results/csv/SMD_benchmark_50_50.csv"
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found.")
         print("Please run 'run_full_benchmark.py' first!")

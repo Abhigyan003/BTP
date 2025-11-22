@@ -4,7 +4,7 @@ import seaborn as sns
 import os
 
 def main():
-    csv_path = "results/csv/target_comparison.csv"
+    csv_path = "results/csv/SMD_comparison.csv"
     if not os.path.exists(csv_path):
         print("Error: CSV not found. Run run_target_comparison.py first.")
         return
