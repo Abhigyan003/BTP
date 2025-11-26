@@ -1,0 +1,6 @@
+Dataset,Config,Avg_F1,Avg_Time
+UCR,Omni_Causal,0.1427,0.0795
+UCR,Omni_Entropy,0.4905,0.0737
+UCR,Omni_Entropy_Causal,0.2472,0.0773
+UCR,Omni_Periodic,0.1981,0.0949
+UCR,TranAD_Scratch,0.2478,0.5096
