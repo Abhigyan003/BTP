@@ -67,29 +67,51 @@ class OmniTransferTrainer:
         
         if len(aligned) == 0: return None
 
-        # 2. Match to Closest Cluster
+        # 2. Match to Closest Cluster using Statistical Features
+        # Use same approach as clustering for consistency
         best_cid = -1
         min_dist = float('inf')
+        
+        # Keep target_shape for reference (used later for alignment)
         target_shape = np.mean(aligned, axis=0)
         
-        # FIX: Z-Normalize for Shape-Based Matching
-        # We want to match the *pattern*, not the amplitude/offset.
-        target_std = np.std(target_shape) + 1e-8
-        target_norm = (target_shape - np.mean(target_shape)) / target_std
+        # Extract statistical features from target segments
+        target_means = aligned.mean(axis=1)      # [n_segments, n_features]
+        target_stds = aligned.std(axis=1)
+        target_ranges = aligned.max(axis=1) - aligned.min(axis=1)
         
-        # print(f"   [Debug] Target Shape Mean: {np.mean(target_shape):.4f}, Var: {np.var(target_shape):.4f}")
+        # Average across segments to get representative statistics
+        target_mean_feat = target_means.mean(axis=0)
+        target_std_feat = target_stds.mean(axis=0)
+        target_range_feat = target_ranges.mean(axis=0)
+        
+        # Debug: Show distances to all clusters
+        cluster_distances = {}
+        
         for cid, centroid in self.cluster_centroids.items():
-            # Normalize centroid too
-            cent_std = np.std(centroid) + 1e-8
-            cent_norm = (centroid - np.mean(centroid)) / cent_std
+            # Extract statistical features from centroid (stored as segment)
+            # Centroid is shape [window_size, n_features], extract its stats
+            cent_mean = centroid.mean(axis=0)
+            cent_std = centroid.std(axis=0)
+            cent_range = centroid.max(axis=0) - centroid.min(axis=0)
+
+            # Calculate distance based on statistical features
+            # This is a simplified example, a more robust distance might combine these
+            dist_mean = np.linalg.norm(target_mean_feat - cent_mean)
+            dist_std = np.linalg.norm(target_std_feat - cent_std)
+            dist_range = np.linalg.norm(target_range_feat - cent_range)
             
-            # Calculate distance on NORMALIZED shapes
-            dist = self.whac.weighted_euclidean(target_norm, cent_norm)
+            # Combine distances (e.g., sum or weighted sum)
+            dist = dist_mean + dist_std + dist_range # Simple sum for now
+
+            cluster_distances[cid] = dist
             
-            # print(f"   [Debug] Dist to Cluster {cid}: {dist:.4f} (Centroid Mean: {np.mean(centroid):.4f})")
             if dist < min_dist:
                 min_dist = dist
                 best_cid = int(cid)
+        
+        # Debug output
+        print(f"   [Cluster Match] Distances: {', '.join([f'C{cid}={d:.4f}' for cid, d in sorted(cluster_distances.items())])} -> Matched: C{best_cid}")
         
         # 3. Load Base Model
         if best_cid not in self.base_models:

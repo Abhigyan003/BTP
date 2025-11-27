@@ -87,6 +87,26 @@ class WHAC_Clustering:
             
         return current_aligned
 
+    def _extract_statistical_features(self, segments):
+        """
+        Extract statistical summary features from segments
+        More robust than raw values, especially with weighted features
+        
+        Returns: [n_segments, n_features * 3] array
+        """
+        n_segments = len(segments)
+        n_features = segments.shape[2]
+        
+        # Extract statistics along temporal dimension (axis=1)
+        means = segments.mean(axis=1)      # [n_segments, n_features]
+        stds = segments.std(axis=1)        # [n_segments, n_features]
+        ranges = segments.max(axis=1) - segments.min(axis=1)  # [n_segments, n_features]
+        
+        # Concatenate all features
+        features = np.hstack([means, stds, ranges])  # [n_segments, n_features * 3]
+        
+        return features
+    
     def fit_predict(self, segments):
         print(f"[Clustering] Running HAC on {len(segments)} segments...")
         
@@ -98,50 +118,90 @@ class WHAC_Clustering:
         else:
             segments_fit = segments
             is_subset = False
-            
-        # Flatten & Weight for Linkage
-        flat_data = segments_fit.reshape(len(segments_fit), -1)
-        pw_flat = np.tile(np.sqrt(self.pw), self.window_size)
-        weighted_data = flat_data * pw_flat
+        
+        # Extract statistical features instead of raw segments
+        stat_features = self._extract_statistical_features(segments_fit)
+        
+        # Apply weights to the statistical features
+        # Now we have mean, std, range for each feature
+        # Weight each statistical measure by the same weight
+        n_features = segments_fit.shape[2]
+        pw_extended = np.tile(self.pw, 3)  # Repeat for mean, std, range
+        weighted_features = stat_features * np.sqrt(pw_extended)
+        
+        # Normalize to prevent scale issues
+        feature_mean = weighted_features.mean(axis=0, keepdims=True)
+        feature_std = weighted_features.std(axis=0, keepdims=True) + 1e-6
+        weighted_features = (weighted_features - feature_mean) / feature_std
         
         # 1. Perform Linkage
-        Z = linkage(weighted_data, method='average', metric='euclidean')
+        Z = linkage(weighted_features, method='average', metric='euclidean')
         
         # 2. Determine K (Manual or Auto)
         if self.n_clusters is not None:
             final_k = self.n_clusters
         else:
-            final_k = self._auto_find_k(weighted_data, Z)
+            final_k = self._auto_find_k(weighted_features, Z)
             
         print(f"[Clustering] Selected optimal clusters: k={final_k}")
         
         # 3. Assign Labels (Using final_k)
         labels_fit = fcluster(Z, t=int(final_k), criterion='maxclust')
         
+        # Debug: Show cluster distribution
+        unique_labels, counts = np.unique(labels_fit, return_counts=True)
+        print(f"[Clustering] Cluster distribution (subset):")
+        for label, count in zip(unique_labels, counts):
+            print(f"  Cluster {label}: {count} segments ({count/len(labels_fit)*100:.1f}%)")
+        
+        # Check if features are collapsing
+        feature_std = weighted_features.std(axis=0)
+        n_collapsed = np.sum(feature_std < 0.01)
+        if n_collapsed > weighted_features.shape[1] * 0.5:
+            print(f"[Clustering] WARNING: {n_collapsed}/{weighted_features.shape[1]} features have very low variance after weighting!")
+            print(f"[Clustering] This may cause poor cluster separation.")
+        
         if not is_subset:
             return labels_fit, segments
             
-        # FIX 3: If we downsampled, assign ALL data to the nearest cluster centroid
+        # If we downsampled, assign ALL data to the nearest cluster centroid
         print(f"   > Assigning remaining {len(segments) - 3000} segments to clusters...")
         
-        # Calculate centroids from the subset
+        # Calculate centroids from the subset (using statistical features)
         centroids = {}
         unique_labels = np.unique(labels_fit)
         for cid in unique_labels:
             cluster_data = segments_fit[labels_fit == cid]
             centroids[cid] = np.mean(cluster_data, axis=0)
             
-        # Assign all segments
+        # Assign all segments using same statistical features
         final_labels = []
         for seg in segments:
+            # Extract features for this segment
+            seg_mean = seg.mean(axis=0)
+            seg_std = seg.std(axis=0)
+            seg_range = seg.max(axis=0) - seg.min(axis=0)
+            
             best_cid = -1
             min_dist = float('inf')
             for cid, centroid in centroids.items():
-                dist = self.weighted_euclidean(seg, centroid)
-                if dist < min_dist:
-                    min_dist = dist
+                # Distance based on statistical features
+                dist_mean = self.weighted_euclidean(seg_mean, centroid.mean(axis=0))
+                dist_std = np.sum((seg_std - centroid.std(axis=0)) ** 2 * self.pw)
+                dist_range = np.sum((seg_range - (centroid.max(axis=0) - centroid.min(axis=0))) ** 2 * self.pw)
+                
+                total_dist = dist_mean + dist_std + dist_range
+                
+                if total_dist < min_dist:
+                    min_dist = total_dist
                     best_cid = cid
             final_labels.append(best_cid)
+        
+        # Debug: Show final cluster distribution
+        final_unique, final_counts = np.unique(final_labels, return_counts=True)
+        print(f"[Clustering] Final cluster distribution (all {len(segments)} segments):")
+        for label, count in zip(final_unique, final_counts):
+            print(f"  Cluster {label}: {count} segments ({count/len(segments)*100:.1f}%)")
             
         return np.array(final_labels), segments
 
