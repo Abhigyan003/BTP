@@ -1,6 +1,0 @@
-Config,Avg_F1,Avg_Time
-Omni_Causal,0.1427,0.0795
-Omni_Entropy,0.4905,0.0737
-Omni_Entropy_Causal,0.2472,0.0773
-Omni_Periodic,0.1981,0.0949
-TranAD_Scratch,0.2478,0.5096
