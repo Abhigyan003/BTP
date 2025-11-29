@@ -102,7 +102,7 @@ def detect_scratch(model, test_data, device):
 # ==========================================
 # MAIN COMPARISON
 # ==========================================
-def run_single_dataset(dataset_name, device):
+def run_single_dataset(dataset_name, device, selected_configs=None, alpha=2.0):
     """Run comparison for a single dataset"""
     print(f"\n{'='*80}")
     print(f"FULL COMPARISON: {dataset_name}")
@@ -111,7 +111,7 @@ def run_single_dataset(dataset_name, device):
     # Initialize tools
     loader = ProcessedDataLoader(processed_dir='processed')
     p_calc = PeriodicityCalculator()
-    e_calc = EntropicWeightCalculator(alpha=2.0)
+    e_calc = EntropicWeightCalculator(alpha=alpha)  # Use provided alpha
     c_calc = CausalWeightCalculator(max_lag=2)
     
     # Get entities
@@ -131,13 +131,19 @@ def run_single_dataset(dataset_name, device):
     # ==========================================
     # CONFIGURATION DEFINITIONS
     # ==========================================
-    configs = {
+    all_configs = {
         'TranAD_Scratch': {'type': 'scratch'},
         'Omni_Periodic': {'type': 'omni', 'use_entropy': False, 'use_causal': False},
         'Omni_Entropy': {'type': 'omni', 'use_entropy': True, 'use_causal': False},
         'Omni_Causal': {'type': 'omni', 'use_entropy': False, 'use_causal': True},
         'Omni_Entropy_Causal': {'type': 'omni', 'use_entropy': True, 'use_causal': True},
     }
+    
+    # Filter configs based on selected_configs
+    if selected_configs:
+        configs = {k: v for k, v in all_configs.items() if k in selected_configs}
+    else:
+        configs = all_configs
     
     all_results = []
     
@@ -206,7 +212,8 @@ def run_single_dataset(dataset_name, device):
             global_weights = np.mean(np.array(weights_list), axis=0)
             
             trainer = OmniTransferTrainer(TranAD, device=device)
-            trainer.train_offline(big_data, global_weights, n_clusters=None)
+            trainer.train_offline(big_data, global_weights, n_clusters=4)  # Fixed 4 clusters
+            # trainer.train_offline(big_data, global_weights, n_clusters=None)  # Auto-tune clusters
             print(f"  Shape Library Ready.\n")
             
             # Evaluate on targets
@@ -241,15 +248,28 @@ def main():
     parser = argparse.ArgumentParser(description='Full OmniTransfer Comparison Suite')
     parser.add_argument('--datasets', type=str, nargs='+', required=True, 
                        help='Dataset names (e.g., SMD MSL SWaT)')
+    parser.add_argument('--configs', type=str, nargs='+', 
+                       default=['TranAD_Scratch', 'Omni_Periodic', 'Omni_Entropy'],
+                       choices=['TranAD_Scratch', 'Omni_Periodic', 'Omni_Entropy', 
+                               'Omni_Causal', 'Omni_Entropy_Causal'],
+                       help='Configurations to run (default: TranAD_Scratch, Omni_Periodic, Omni_Entropy)')
+    parser.add_argument('--alpha', type=float, default=2.0,
+                       help='Alpha parameter for entropy weights (default: 2.0, try 0.5 or 1.0)')
     args = parser.parse_args()
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    print(f"\n{'='*80}")
+    print(f"RUNNING CONFIGURATIONS: {', '.join(args.configs)}")
+    if 'Omni_Entropy' in args.configs or 'Omni_Entropy_Causal' in args.configs:
+        print(f"ENTROPY ALPHA: {args.alpha}")
+    print(f"{'='*80}\n")
     
     all_datasets_results = []
     
     # Run comparison for each dataset
     for dataset in args.datasets:
-        results = run_single_dataset(dataset, device)
+        results = run_single_dataset(dataset, device, selected_configs=args.configs, alpha=args.alpha)
         if results:
             all_datasets_results.extend(results)
     
@@ -263,8 +283,10 @@ def main():
     df = pd.DataFrame(all_datasets_results)
     
     # Save combined results
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     datasets_str = '_'.join(args.datasets)
-    csv_path = f"results/csv/{datasets_str}_full_comparison.csv"
+    csv_path = f"results/csv/{datasets_str}_full_comparison_{timestamp}.csv"
     df.to_csv(csv_path, index=False)
     
     print(f"\n{'='*80}")
@@ -300,11 +322,11 @@ def main():
     print(per_dataset_summary.to_string())
     print("="*80 + "\n")
     
-    # Save summaries
-    overall_summary_path = f"results/csv/{datasets_str}_overall_summary.csv"
+    # Save summaries with timestamp
+    overall_summary_path = f"results/csv/{datasets_str}_overall_summary_{timestamp}.csv"
     overall_summary.to_csv(overall_summary_path, index=False)
     
-    per_dataset_summary_path = f"results/csv/{datasets_str}_per_dataset_summary.csv"
+    per_dataset_summary_path = f"results/csv/{datasets_str}_per_dataset_summary_{timestamp}.csv"
     per_dataset_summary.to_csv(per_dataset_summary_path)  # Keep index
     
     print(f"Overall summary saved: {overall_summary_path}")
