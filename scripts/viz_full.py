@@ -4,6 +4,32 @@ import seaborn as sns
 import numpy as np
 import argparse
 import os
+import glob
+
+def find_latest_file(base_pattern, fallback_path=None):
+    """
+    Find the most recent file matching the pattern.
+    
+    Args:
+        base_pattern: Glob pattern to match files (e.g., 'results/csv/SMD_full_comparison_*.csv')
+        fallback_path: Non-timestamped file path to try if no timestamped files found
+        
+    Returns:
+        Path to the most recent matching file, or fallback_path, or None
+    """
+    # Try to find timestamped files
+    matching_files = glob.glob(base_pattern)
+    
+    if matching_files:
+        # Sort by modification time (most recent first)
+        matching_files.sort(key=os.path.getmtime, reverse=True)
+        return matching_files[0]
+    
+    # Fallback to non-timestamped file if it exists
+    if fallback_path and os.path.exists(fallback_path):
+        return fallback_path
+    
+    return None
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize Full Comparison Results')
@@ -12,28 +38,70 @@ def main():
     args = parser.parse_args()
     
     datasets_str = '_'.join(args.datasets)
-    csv_path = f"results/csv/{datasets_str}_full_comparison.csv"
-    overall_summary_path = f"results/csv/{datasets_str}_overall_summary.csv"
-    per_dataset_summary_path = f"results/csv/{datasets_str}_per_dataset_summary.csv"
     
-    if not os.path.exists(csv_path):
-        print(f"Error: {csv_path} not found.")
+    # Find the most recent timestamped files, with fallback to non-timestamped
+    csv_path = find_latest_file(
+        f"results/csv/{datasets_str}_full_comparison_*.csv",
+        fallback_path=f"results/csv/{datasets_str}_full_comparison.csv"
+    )
+    overall_summary_path = find_latest_file(
+        f"results/csv/{datasets_str}_overall_summary_*.csv",
+        fallback_path=f"results/csv/{datasets_str}_overall_summary.csv"
+    )
+    per_dataset_summary_path = find_latest_file(
+        f"results/csv/{datasets_str}_per_dataset_summary_*.csv",
+        fallback_path=f"results/csv/{datasets_str}_per_dataset_summary.csv"
+    )
+    
+    if not csv_path or not os.path.exists(csv_path):
+        print(f"Error: No comparison results found for datasets: {datasets_str}")
+        print(f"Looked for: results/csv/{datasets_str}_full_comparison_*.csv")
         print(f"Run: python -m scripts.full_comparison --datasets {' '.join(args.datasets)}")
         return
     
+    print(f"Loading results from: {csv_path}")
+    
     # Load data
     df = pd.read_csv(csv_path)
-    overall_summary = pd.read_csv(overall_summary_path)
-    per_dataset_summary = pd.read_csv(per_dataset_summary_path, index_col=[0, 1])
+    
+    # Load or generate summary files
+    if overall_summary_path and os.path.exists(overall_summary_path):
+        overall_summary = pd.read_csv(overall_summary_path)
+    else:
+        print("Warning: Overall summary file not found, generating from main data...")
+        overall_summary = df.groupby('Config').agg({
+            'F1': 'mean',
+            'TrainTime': 'mean'
+        }).round(4)
+        overall_summary.columns = ['Avg_F1', 'Avg_Time']
+        overall_summary = overall_summary.reset_index()
+    
+    if per_dataset_summary_path and os.path.exists(per_dataset_summary_path):
+        per_dataset_summary = pd.read_csv(per_dataset_summary_path, index_col=[0, 1])
+    else:
+        print("Warning: Per-dataset summary file not found, generating from main data...")
+        per_dataset_summary = df.groupby(['Dataset', 'Config']).agg({
+            'F1': 'mean',
+            'TrainTime': 'mean'
+        }).round(4)
+        per_dataset_summary.columns = ['Avg_F1', 'Avg_Time']
     
     # Sort configs for consistent ordering
-    config_order = [
+    all_config_order = [
         'TranAD_Scratch',
         'Omni_Periodic', 
         'Omni_Entropy',
         'Omni_Causal',
         'Omni_Entropy_Causal'
     ]
+    
+    # Filter to only configs present in the data
+    config_order = [c for c in all_config_order if c in overall_summary['Config'].values]
+    
+    # Assign color based on position in all_config_order for consistency
+    config_colors = {c: ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6'][all_config_order.index(c)] 
+                     for c in config_order}
+    colors = [config_colors[c] for c in config_order]
     
     overall_summary['Config'] = pd.Categorical(overall_summary['Config'], categories=config_order, ordered=True)
     overall_summary = overall_summary.sort_values('Config')
@@ -46,7 +114,6 @@ def main():
     # PLOT 1: F1 SCORE COMPARISON (BAR)
     # ==========================================
     ax1 = plt.subplot(2, 3, 1)
-    colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6']
     bars = ax1.bar(range(len(overall_summary)), overall_summary['Avg_F1'], color=colors, alpha=0.8, edgecolor='black')
     
     ax1.set_xticks(range(len(overall_summary)))
@@ -83,10 +150,10 @@ def main():
     # PLOT 3: F1 vs TIME SCATTER
     # ==========================================
     ax3 = plt.subplot(2, 3, 3)
-    for i, (config, color) in enumerate(zip(config_order, colors)):
+    for config in config_order:
         mask = overall_summary['Config'] == config
         ax3.scatter(overall_summary[mask]['Avg_Time'], overall_summary[mask]['Avg_F1'], 
-                   s=300, color=color, alpha=0.7, edgecolors='black', linewidth=2,
+                   s=300, color=config_colors[config], alpha=0.7, edgecolors='black', linewidth=2,
                    label=config.replace('_', ' '))
     
     ax3.set_xlabel('Training Time (s)', fontsize=11, fontweight='bold')
@@ -103,28 +170,30 @@ def main():
     
     # Create pivot table: Dataset vs Config (from main dataframe)
     pivot_dataset = df.groupby(['Dataset', 'Config'])['F1'].mean().unstack('Config')
-    pivot_dataset = pivot_dataset[config_order]  # Reorder columns
+    # Only reorder with configs that exist in the data
+    available_configs = [c for c in config_order if c in pivot_dataset.columns]
+    pivot_dataset = pivot_dataset[available_configs]
     
     # Create table
     table_data = []
-    table_data.append(['Dataset'] + [c.replace('_', '\n') for c in config_order])
+    table_data.append(['Dataset'] + [c.replace('_', '\n') for c in available_configs])
     
     for dataset in pivot_dataset.index:
         row = [dataset]
-        for config in config_order:
+        for config in available_configs:
             val = pivot_dataset.loc[dataset, config]
             row.append(f'{val:.3f}')
         table_data.append(row)
     
     table = ax4.table(cellText=table_data, cellLoc='center', loc='center',
-                     colWidths=[0.15] + [0.17]*len(config_order))
+                     colWidths=[0.15] + [0.17]*len(available_configs))
     
     table.auto_set_font_size(False)
     table.set_fontsize(9)
     table.scale(1, 2.5)
     
     # Style header row
-    for i in range(len(config_order) + 1):
+    for i in range(len(available_configs) + 1):
         cell = table[(0, i)]
         cell.set_facecolor('#3498db')
         cell.set_text_props(weight='bold', color='white')
@@ -134,7 +203,7 @@ def main():
         table[(i, 0)].set_facecolor('#ecf0f1')
         table[(i, 0)].set_text_props(weight='bold')
         
-        for j in range(1, len(config_order) + 1):
+        for j in range(1, len(available_configs) + 1):
             val = float(table_data[i][j])
             if val >= 0.9:
                 color = '#2ecc71'  # Green
@@ -157,8 +226,8 @@ def main():
                             positions=range(len(config_order)), widths=0.7,
                             showmeans=True, showmedians=True)
     
-    for i, pc in enumerate(violin['bodies']):
-        pc.set_facecolor(colors[i])
+    for i, (config, pc) in enumerate(zip(config_order, violin['bodies'])):
+        pc.set_facecolor(config_colors[config])
         pc.set_alpha(0.7)
     
     ax5.set_xticks(range(len(config_order)))
