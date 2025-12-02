@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import pdist
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
 
 class WHAC_Clustering:
     def __init__(self, periodic_weights, window_size=60, n_clusters=None):
@@ -207,14 +207,15 @@ class WHAC_Clustering:
 
     def _auto_find_k(self, data, Z):
         """
-        Uses Silhouette Score to find best K between 2 and 10.
+        Uses Calinski-Harabasz Index to find best K between 2 and 30.
         """
         best_k = 2
         best_score = -1
         
         print("   > Auto-tuning K...", end=" ")
-        # Try a range of clusters
-        search_range = range(2, min(11, len(data)))
+        # Try a range of clusters (up to 30 or data size)
+        max_k = min(31, len(data))
+        search_range = range(2, max_k)
         
         for k in search_range:
             labels = fcluster(Z, t=k, criterion='maxclust')
@@ -222,12 +223,13 @@ class WHAC_Clustering:
             # Safety check: Need at least 2 clusters and distinct labels
             if len(np.unique(labels)) < 2: continue
             
-            score = silhouette_score(data, labels, metric='euclidean')
+            # Use Calinski-Harabasz Index (Variance Ratio Criterion)
+            # Higher is better. Favors tighter clusters than Silhouette.
+            score = calinski_harabasz_score(data, labels)
             
-            # Simple logic: maximize silhouette
             if score > best_score:
                 best_score = score
                 best_k = k
         
-        print(f"Done. Best Score: {best_score:.3f}")
+        print(f"Done. Best CH Score: {best_score:.3f}")
         return best_k

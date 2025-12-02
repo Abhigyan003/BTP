@@ -246,3 +246,103 @@ class TranAD_Basic(nn.Module):
         x = self.transformer_decoder(tgt, memory)
         x = self.fcn(x)
         return x
+
+class Encoder(nn.Module):
+    def __init__(self, input_dim, rnn_dim, dense_dim, latent_dim):
+        super(Encoder, self).__init__()
+        # "RNN layers are shallow" (usually 1 layer GRU/LSTM)
+        self.rnn = nn.GRU(input_dim, rnn_dim, batch_first=True)
+        
+        # "Dense layers are deep" -> MLP
+        self.dense = nn.Sequential(
+            nn.Linear(rnn_dim, dense_dim),
+            nn.ReLU(),
+            nn.Linear(dense_dim, dense_dim),
+            nn.ReLU()
+        )
+        # VAE Projection
+        self.fc_mu = nn.Linear(dense_dim, latent_dim)
+        self.fc_logvar = nn.Linear(dense_dim, latent_dim)
+
+    def forward(self, x):
+        # x: [batch, window_size, input_dim]
+        # RNN extracts temporal features
+        _, h_n = self.rnn(x) 
+        h_n = h_n.squeeze(0) # [batch, rnn_dim]
+        
+        # Dense compresses to latent
+        hidden = self.dense(h_n)
+        mu = self.fc_mu(hidden)
+        logvar = self.fc_logvar(hidden)
+        return mu, logvar
+
+class Decoder(nn.Module):
+    def __init__(self, input_dim, rnn_dim, dense_dim, latent_dim, window_size):
+        super(Decoder, self).__init__()
+        self.window_size = window_size
+        self.input_dim = input_dim
+        
+        # "Dense layers are deep" (inverse of encoder)
+        self.dense_input = nn.Sequential(
+            nn.Linear(latent_dim, dense_dim),
+            nn.ReLU(),
+            nn.Linear(dense_dim, rnn_dim),
+            nn.ReLU()
+        )
+        
+        # Decoder RNN (Reconstructs sequence from latent state)
+        self.rnn = nn.GRU(rnn_dim, rnn_dim, batch_first=True)
+        
+        # Final projection to KPI space
+        self.dense_out = nn.Linear(rnn_dim, input_dim)
+
+    def forward(self, z):
+        # z: [batch, latent_dim]
+        
+        # Expand z to be the initial hidden state or input for RNN
+        hidden = self.dense_input(z) # [batch, rnn_dim]
+        
+        # Repeat hidden state to match window size for RNN input construction
+        # Strategy: Use the mapped latent as the input for every timestep
+        # This allows the RNN to unravel the temporal dynamics from the static latent z
+        rnn_in = hidden.unsqueeze(1).repeat(1, self.window_size, 1) # [batch, win, rnn_dim]
+        
+        out, _ = self.rnn(rnn_in) # [batch, win, rnn_dim]
+        
+        # Map back to Data Space
+        recon_x = self.dense_out(out) # [batch, win, input_dim]
+        return recon_x
+
+class RNN_VAE(nn.Module):
+    def __init__(self, feat_dim, hidden_dim=64, latent_dim=3, n_window=100, device='cpu'):
+        super(RNN_VAE, self).__init__()
+        self.name = 'RNN_VAE'
+        self.feat_dim = feat_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.n_window = n_window
+        self.device = device
+        
+        # Use user's architecture but adapt __init__ to match existing interface
+        # User's config: rnn_hidden_dim=64, dense_hidden_dim=64
+        self.encoder = Encoder(feat_dim, hidden_dim, hidden_dim, latent_dim)
+        self.decoder = Decoder(feat_dim, hidden_dim, hidden_dim, latent_dim, n_window)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        mu, logvar = self.encoder(x)
+        z = self.reparameterize(mu, logvar)
+        recon_x = self.decoder(z)
+        return recon_x, mu, logvar
+
+    def loss_function(self, recon_x, x, mu, logvar):
+        # ELBO = Reconstruction Loss + KL Divergence
+        # Paper implies sum over dimensions
+        MSE = nn.functional.mse_loss(recon_x, x, reduction='sum')
+        # Analytical KLD for Gaussian
+        KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        return MSE + KLD

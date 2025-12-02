@@ -1,0 +1,4 @@
+Dataset,Config,Avg_F1,Avg_Time
+Synthetic_DS2,Omni_Entropy,0.7355,0.1993
+Synthetic_DS2,Omni_Periodic,0.7513,0.2823
+Synthetic_DS2,TranAD_Scratch,0.7326,1.7855

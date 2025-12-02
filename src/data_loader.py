@@ -47,6 +47,26 @@ class ProcessedDataLoader:
         
         return sorted(list(entities))
 
+    @staticmethod
+    def filter_low_variance(train, test, threshold=1e-4):
+        """
+        Filters out features with variance lower than threshold in the training set.
+        Applies the same filter to the test set.
+        """
+        # Calculate variance along time axis (axis 0)
+        train_var = np.var(train, axis=0)
+        
+        # Keep features with variance > threshold
+        keep_indices = np.where(train_var > threshold)[0]
+        
+        if len(keep_indices) < train.shape[1]:
+            # print(f"   > Filtering low-variance features: {train.shape[1]} -> {len(keep_indices)}")
+            train_filtered = train[:, keep_indices]
+            test_filtered = test[:, keep_indices]
+            return train_filtered, test_filtered, keep_indices
+        
+        return train, test, np.arange(train.shape[1])
+
 class PeriodicityCalculator:
     """
     Calculates Periodicity Weights (PW) for OmniTransfer.

@@ -1,0 +1,4 @@
+Dataset,Config,Machine,TrainTime,F1
+State_DS1,OmniTransfer_Entropy,entity_0002,1.1930742263793945,0.9473684155678671
+State_DS1,OmniTransfer_Entropy,entity_0003,1.1693744659423828,0.9354838656867845
+State_DS1,OmniTransfer_Entropy,entity_0004,1.1599969863891602,0.9062499947607422

@@ -4,12 +4,13 @@ import pandas as pd
 import numpy as np
 import pickle
 import json
+import re
 from shutil import copyfile
 
 output_folder = 'processed'
 data_folder = 'datasets'
 
-datasets = ['synthetic', 'SMD', 'SWaT', 'SMAP', 'MSL', 'WADI', 'MSDS', 'UCR', 'MBA', 'NAB']
+datasets = ['synthetic', 'SMD', 'SWaT', 'SMAP', 'MSL', 'WADI', 'MSDS', 'UCR', 'MBA', 'NAB', 'CTF']
 
 wadi_drop = ['2_LS_001_AL', '2_LS_002_AL','2_P_001_STATUS','2_P_002_STATUS']
 
@@ -192,6 +193,105 @@ def load_data(dataset):
 			labels[ls + i, :] = 1
 		for file in ['train', 'test', 'labels']:
 			np.save(os.path.join(folder, f'{file}.npy'), eval(file))
+	elif dataset == 'CTF':
+		# CTF dataset: 533 machines, 49 KPIs, 13 days total
+		# First 5 days for training, next 8 days for testing
+		# Data collected every 30 seconds, 2880 time points per day
+		# Files are in CTF_data subdirectory with .txt extension
+		# Named as: {machine_id}_{day}.txt (e.g., 463_18.txt)
+		# Labels are in label_result/ as {machine_id}.pkl
+		
+		data_dir = os.path.join(dataset_folder, 'CTF_data')
+		label_dir = os.path.join(dataset_folder, 'label_result')
+		
+		if not os.path.exists(data_dir):
+			print(f"Error: {data_dir} not found. Please extract CTF_data.tar.gz first.")
+			return
+		
+		data_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.txt') and not f.startswith('.')])
+		
+		# Group files by machine ID
+		# Files are named: machine_day.txt (e.g., 463_18.txt, 463_19.txt, ...)
+		machines = {}
+		for fname in data_files:
+			# Extract machine ID (everything before the last underscore)
+			parts = fname.replace('.txt', '').rsplit('_', 1)
+			if len(parts) == 2:
+				machine_id = parts[0]
+				if machine_id not in machines:
+					machines[machine_id] = []
+				machines[machine_id].append(fname)
+		
+		print(f"Found {len(machines)} machines in CTF dataset")
+		
+		# Process each machine
+		for machine_id, machine_files in machines.items():
+			# Sort files by day number
+			machine_files.sort(key=lambda x: int(x.replace('.txt', '').rsplit('_', 1)[1]))
+			
+			if len(machine_files) != 13:
+				print(f"Warning: Machine {machine_id} has {len(machine_files)} days instead of 13, skipping")
+				continue
+			
+			# Load all days for this machine
+			all_data = []
+			for fname in machine_files:
+				data = np.genfromtxt(os.path.join(data_dir, fname),
+									dtype=np.float64,
+									delimiter=',')
+				# Handle NaN values by replacing with 0
+				data = np.nan_to_num(data, nan=0.0)
+				if data.ndim == 1:
+					data = data.reshape(-1, 1)
+				all_data.append(data)
+			
+			# Combine all days
+			full_data = np.vstack(all_data)
+			
+			# Split: first 5 days (5 * 2880 = 14400 points) for train
+			#        next 8 days (8 * 2880 = 23040 points) for test
+			train_end = 5 * 2880
+			test_end = train_end + (8 * 2880)
+			
+			train = full_data[:train_end]
+			test = full_data[train_end:test_end]
+			
+			# Normalize
+			train, min_a, max_a = normalize3(train)
+			test, _, _ = normalize3(test, min_a, max_a)
+			
+			# Save train and test data
+			np.save(f'{folder}/{machine_id}_train.npy', train)
+			np.save(f'{folder}/{machine_id}_test.npy', test)
+			
+			# Load labels from label_result directory (pickle files)
+			# Labels are point-level (1D), indicating anomaly at each time point
+			label_file = os.path.join(label_dir, f'{machine_id}.pkl')
+			
+			if os.path.exists(label_file):
+				with open(label_file, 'rb') as f:
+					labels = pickle.load(f)
+				labels = np.array(labels, dtype=np.float64).flatten()
+				
+				# Labels might be 23039 instead of 23040 (off-by-one in dataset)
+				# Pad to match test length if needed
+				if len(labels) < test.shape[0]:
+					labels = np.pad(labels, (0, test.shape[0] - len(labels)), mode='constant', constant_values=0)
+				elif len(labels) > test.shape[0]:
+					labels = labels[:test.shape[0]]
+				
+				# Broadcast point-level labels to all features (same as SMAP/MSL datasets)
+				# Shape: (time_points,) -> (time_points, n_features)
+				labels = np.tile(labels.reshape(-1, 1), (1, test.shape[1]))
+				
+				np.save(f'{folder}/{machine_id}_labels.npy', labels)
+			else:
+				# Create zero labels if label file not found
+				print(f"Warning: Label file not found for {machine_id}, creating zero labels")
+				labels = np.zeros_like(test)
+				np.save(f'{folder}/{machine_id}_labels.npy', labels)
+		
+		print(f"CTF preprocessing complete: {len(machines)} machines processed")
 	else:
 		raise Exception(f'Not Implemented. Check one of {datasets}')
 

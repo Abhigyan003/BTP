@@ -1,0 +1,10 @@
+Dataset,Config,Avg_F1,Avg_Time
+MSL,Omni_Entropy,0.9542,1.5265
+MSL,Omni_Periodic,0.941,1.4446
+MSL,TranAD_Scratch,0.887,1.8822
+SMAP,Omni_Entropy,0.915,1.156
+SMAP,Omni_Periodic,0.9118,0.9243
+SMAP,TranAD_Scratch,0.9008,1.1723
+SMD,Omni_Entropy,0.8907,1.296
+SMD,Omni_Periodic,0.8879,1.2152
+SMD,TranAD_Scratch,0.8726,19.0571

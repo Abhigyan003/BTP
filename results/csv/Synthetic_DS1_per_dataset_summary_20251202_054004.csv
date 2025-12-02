@@ -1,0 +1,2 @@
+Dataset,Config,Avg_F1,Avg_Time
+Synthetic_DS1,TranAD_Scratch,0.655,0.8219
