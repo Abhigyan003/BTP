@@ -18,6 +18,7 @@ from src.causality import CausalWeightCalculator
 from src.entropy import EntropicWeightCalculator
 from src.pot import pot_eval
 from src.ctf import CTF_Trainer
+from src.jumpstarter_adapter import JumpStarterAdapter
 
 # For POT evaluation, we need dataset-specific thresholds
 # These are from the original TranAD paper
@@ -250,6 +251,7 @@ def run_single_dataset(dataset_name, device, selected_configs=None, alpha=2.0, e
         'OmniTransfer_CTF_Periodic': {'type': 'omni', 'use_entropy': False, 'use_causal': False, 'model': 'RNN_VAE'},
         'OmniTransfer_CTF_Entropy': {'type': 'omni', 'use_entropy': True, 'use_causal': False, 'model': 'RNN_VAE'},
         'CTF': {'type': 'ctf'},
+        'JumpStarter': {'type': 'jumpstarter'},
         # Aliases for backward compatibility
         'Omni_Periodic': {'type': 'omni', 'use_entropy': False, 'use_causal': False},
         'Omni_Entropy': {'type': 'omni', 'use_entropy': True, 'use_causal': False},
@@ -421,6 +423,59 @@ def run_single_dataset(dataset_name, device, selected_configs=None, alpha=2.0, e
                 all_results.append({
                     'Dataset': dataset_name, 'Config': config_name, 'Machine': entity, 'TrainTime': train_time, 'F1': f1
                 })
+                
+        elif config['type'] == 'jumpstarter':
+            # JUMPSTARTER: Compressive Sensing-based Anomaly Detection
+            for idx, entity in enumerate(target_entities):
+                print(f"  {idx+1}/{len(target_entities)}: {entity}...", end=' ')
+                
+                train = loader.load(dataset_name, entity, 'train')
+                test = loader.load(dataset_name, entity, 'test')
+                labels = loader.load(dataset_name, entity, 'labels')
+                if len(labels.shape) > 1: labels = labels[:, 0]
+                
+                # Filter low variance features for CTF
+                if dataset_name == 'CTF':
+                    train, test, _ = loader.filter_low_variance(train, test)
+                
+                feat_dim = train.shape[1]
+                
+                # Create adapter with default parameters
+                adapter = JumpStarterAdapter(
+                    feat_dim=feat_dim,
+                    device=device,
+                    sample_rate=0.3,
+                    cluster_threshold=0.15,
+                    workers=4,
+                    window=96,
+                    windows_per_cycle=7
+                )
+                
+                t0 = time.time()
+                # Train (reconstruct training data)
+                reconstructed_train, _ = adapter.train(train)
+                
+                # Detect on test data (will reconstruct internally)
+                scores = adapter.detect(test)
+                train_time = time.time() - t0
+                
+                if eval_method == 'pot':
+                    # For POT, we need training scores
+                    train_scores = adapter.detect(train, reconstructed=reconstructed_train)
+                    f1 = calc_f1_pot(train_scores, scores, labels, dataset=dataset_name)
+                else:
+                    # Default: Point-Adjusted F1
+                    f1 = calc_point_adjusted_f1(scores, labels)
+                
+                print(f"Time: {train_time:.2f}s | F1: {f1:.4f}")
+                
+                all_results.append({
+                    'Dataset': dataset_name,
+                    'Config': config_name,
+                    'Machine': entity,
+                    'TrainTime': train_time,
+                    'F1': f1
+                })
 
         else:
             # OMNITRANSFER VARIANTS
@@ -589,7 +644,8 @@ def main():
     parser.add_argument('--configs', type=str, nargs='+', 
                        default=['TranAD_Scratch', 'Omni_Periodic', 'Omni_Entropy'],
                         choices=['TranAD_Scratch', 'Omni_Periodic', 'Omni_Entropy', 
-                                'Omni_Causal', 'Omni_Entropy_Causal', 'CTF', 'Omni_CTF_Periodic', 'Omni_CTF_Entropy'],
+                                'Omni_Causal', 'Omni_Entropy_Causal', 'CTF', 'Omni_CTF_Periodic', 'Omni_CTF_Entropy',
+                                'JumpStarter'],
                         help='Configurations to run (default: TranAD_Scratch, Omni_Periodic, Omni_Entropy)')
     parser.add_argument('--alpha', type=float, default=2.0,
                        help='Alpha parameter for entropy weights (default: 2.0, try 0.5 or 1.0)')

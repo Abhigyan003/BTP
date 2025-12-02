@@ -1,0 +1,4 @@
+Dataset,Config,Avg_F1,Avg_Time
+MSL,JumpStarter,0.6815,6.571
+SMAP,JumpStarter,0.7642,8.505
+SMD,JumpStarter,0.8416,41.5283
