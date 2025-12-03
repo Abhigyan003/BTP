@@ -49,8 +49,5 @@ class InputEmbedding(nn.Module):
 
     def forward(self, x):
         
-        try:
-            x = self.token_embedding(x) + self.pos_embedding(x).cuda()
-        except:
-            import pdb; pdb.set_trace()
+        x = self.token_embedding(x) + self.pos_embedding(x).to(x.device)
         return self.dropout(x)
