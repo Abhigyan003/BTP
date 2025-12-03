@@ -418,7 +418,7 @@ class Solver(object):
             else:
                 output = torch.cat([output,self.model(input)['queries']], dim=0)
         
-        self.memory_init_embedding = k_means_clustering(x=output, n_mem=self.n_memory, d_model=self.d_model)
+        self.memory_init_embedding = k_means_clustering(x=output, n_mem=self.n_memory, d_model=self.d_model, device=self.device)
 
         self.memory_initial = False
 
