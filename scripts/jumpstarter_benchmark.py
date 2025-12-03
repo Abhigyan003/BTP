@@ -230,24 +230,24 @@ def run_benchmark(dataset_name, entities=None,
                 latest_windows=96
             )
             
-            # Train (reconstruct) - use stride=50 for reasonable speed
+            # Train (reconstruct) - use stride=10 for reasonable speed
             t0 = time.time()
             train_rec, retries = detector.reconstruct(
                 train, window=window,
                 windows_per_cycle=windows_per_cycle,
-                stride=50
+                stride=10
             )
             
-            # Detect on test - use stride=50 for reasonable speed
+            # Detect on test - use stride=10 for reasonable speed
             test_rec, _ = detector.reconstruct(
                 test, window=window,
                 windows_per_cycle=windows_per_cycle,
-                stride=50
+                stride=10
             )
             
             scores = detector.predict(
                 test, test_rec,
-                window=10, stride=50
+                window=10, stride=1
             )
             train_time = time.time() - t0
             
@@ -288,12 +288,12 @@ def main():
                        help='Reconstruction window size (default: 96)')
     parser.add_argument('--windows_per_cycle', type=int, default=7,
                        help='Windows per cycle (default: 7)')
-    parser.add_argument('--sample_rate', type=float, default=0.4,
-                       help='Sampling rate (default: 0.4)')
+    parser.add_argument('--sample_rate', type=float, default=0.3,
+                       help='Sampling rate (default: 0.3)')
     parser.add_argument('--cluster_threshold', type=float, default=0.15,
                        help='Cluster threshold (default: 0.15)')
-    parser.add_argument('--workers', type=int, default=16,
-                       help='Number of workers (default: 16)')
+    parser.add_argument('--workers', type=int, default=4,
+                       help='Number of workers (default: 4)')
     parser.add_argument('--random_state', type=int, default=42,
                        help='Random seed (default: 42)')
     
